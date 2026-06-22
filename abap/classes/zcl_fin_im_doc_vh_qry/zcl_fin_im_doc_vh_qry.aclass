@@ -1,0 +1,150 @@
+class zcl_fin_im_doc_vh_qry definition
+  public final create public.
+
+  public section.
+    interfaces if_rap_query_provider.
+
+endclass.
+
+
+class zcl_fin_im_doc_vh_qry implementation.
+
+  method if_rap_query_provider~select.
+
+    data lt_result type standard table of zc_fin_im_doc_vh_ce.
+
+    " ---------------------------------------------------------------
+    " 1. Extract filters
+    " ---------------------------------------------------------------
+    try.
+        data(lt_filter) = io_request->get_filter( )->get_as_ranges( ).
+      catch cx_rap_query_filter_no_range.
+        io_response->set_total_number_of_records( 0 ).
+        io_response->set_data( lt_result ).
+        return.
+    endtry.
+
+    " ---------------------------------------------------------------
+    " 2. Handle paging (required by RAP framework)
+    " ---------------------------------------------------------------
+    data(lo_paging) = io_request->get_paging( ).
+    data(lv_offset) = lo_paging->get_offset( ).
+    data(lv_page_size) = lo_paging->get_page_size( ).
+
+    data lv_max_rows type i value 50.
+    if lv_page_size > 0.
+      lv_max_rows = lv_page_size + lv_offset.
+    endif.
+
+    " ---------------------------------------------------------------
+    " 3. Extract filter values as strings (no auto-padding)
+    " ---------------------------------------------------------------
+    data: lv_docid    type string,
+          lv_po       type string,
+          lv_vendor   type string,
+          lv_vendname type string.
+
+    loop at lt_filter into data(ls_filter).
+      case ls_filter-name.
+        when 'VIMDOCUMENTID'.
+          read table ls_filter-range index 1 into data(ls_range_doc).
+          if sy-subrc = 0.
+            lv_docid = ls_range_doc-low.
+          endif.
+        when 'PURCHASEORDER'.
+          read table ls_filter-range index 1 into data(ls_range_po).
+          if sy-subrc = 0.
+            lv_po = ls_range_po-low.
+          endif.
+        when 'VENDOR'.
+          read table ls_filter-range index 1 into data(ls_range_ven).
+          if sy-subrc = 0.
+            lv_vendor = ls_range_ven-low.
+          endif.
+        when 'VENDORNAME'.
+          read table ls_filter-range index 1 into data(ls_range_name).
+          if sy-subrc = 0.
+            lv_vendname = ls_range_name-low.
+          endif.
+      endcase.
+    endloop.
+
+    if lv_docid is initial and lv_po is initial
+       and lv_vendor is initial and lv_vendname is initial.
+      io_response->set_total_number_of_records( 0 ).
+      io_response->set_data( lt_result ).
+      return.
+    endif.
+
+    " ---------------------------------------------------------------
+    " 4. Build LIKE patterns using flat char types (not domain types)
+    " ---------------------------------------------------------------
+    data: lv_doc_pattern    type c length 20,
+          lv_po_pattern     type c length 20,
+          lv_vendor_pattern type c length 20,
+          lv_name_pattern   type c length 100.
+
+    data: lv_use_doc    type abap_bool,
+          lv_use_po     type abap_bool,
+          lv_use_vendor type abap_bool,
+          lv_use_name   type abap_bool.
+
+    if lv_docid is not initial.
+      lv_doc_pattern = |%{ lv_docid }%|.
+      lv_use_doc = abap_true.
+    endif.
+
+    if lv_po is not initial.
+      lv_po_pattern = |%{ lv_po }%|.
+      lv_use_po = abap_true.
+    endif.
+
+    if lv_vendor is not initial.
+      lv_vendor_pattern = |%{ lv_vendor }%|.
+      lv_use_vendor = abap_true.
+    endif.
+
+    if lv_vendname is not initial.
+      lv_name_pattern = |%{ to_upper( lv_vendname ) }%|.
+      lv_use_name = abap_true.
+    endif.
+
+    " ---------------------------------------------------------------
+    " 5. Select from search help CDS view
+    " ---------------------------------------------------------------
+    try.
+        select from zi_fin_im_doc_sh
+          fields
+            vim_doc_id    as vimdocumentid,
+            po_number     as purchaseorder,
+            vendor        as vendor,
+            vendor_name   as vendorname,
+            grossamount   as grossamount,
+            currency      as currency,
+            status        as processstatus,
+            statustext    as processstatustext
+          where ( @lv_use_doc    = @abap_false or vim_doc_id like @lv_doc_pattern )
+            and ( @lv_use_po     = @abap_false or po_number  like @lv_po_pattern )
+            and ( @lv_use_vendor = @abap_false or vendor     like @lv_vendor_pattern )
+            and ( @lv_use_name   = @abap_false
+                  or upper( vendor_name ) like @lv_name_pattern
+                  or upper( vendor_name_m_c ) like @lv_name_pattern )
+          order by vim_doc_id
+          into table @lt_result
+          up to @lv_max_rows rows.
+      catch cx_root into data(lx_error).
+        " Return empty on error
+    endtry.
+
+    " ---------------------------------------------------------------
+    " 6. Return results
+    " ---------------------------------------------------------------
+    if io_request->is_total_numb_of_rec_requested( ).
+      io_response->set_total_number_of_records( lines( lt_result ) ).
+    endif.
+
+    io_response->set_data( lt_result ).
+
+  endmethod.
+
+endclass.

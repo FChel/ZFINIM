@@ -1,0 +1,11 @@
+@EndUserText.label: 'Invoice Matching - Service Definition'
+define service Z_FIN_IM_DOC_SRV {
+  expose ZC_FIN_IM_DOC        as VIMDocument;
+  expose ZC_FIN_IM_DOC_ITEM   as VIMDocumentItem;
+  expose ZC_FIN_IM_GR_CE      as GoodsReceipt;
+  expose ZC_FIN_IM_PO_ITEM_CE as PurchaseOrderItem;
+  expose I_Supplier           as Supplier;
+  expose I_Currency           as Currency;
+  expose I_PaymentTermsText   as PaymentTerms;
+  expose ZC_FIN_IM_DOC_VH_CE  as VIMDocumentVH;
+}

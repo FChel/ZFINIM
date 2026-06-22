@@ -1,0 +1,5 @@
+class zbp_i_fin_im_doc definition public abstract final for behavior of zi_fin_im_doc.
+endclass.
+
+class zbp_i_fin_im_doc implementation.
+endclass.

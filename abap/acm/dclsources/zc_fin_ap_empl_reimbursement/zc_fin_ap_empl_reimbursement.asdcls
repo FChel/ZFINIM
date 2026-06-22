@@ -1,0 +1,48 @@
+/*--------------------------------------------------------------------------------------*
+* AUTHOR:      240162LV                                                                 *
+* DATE:        10.08.2023                                                               *
+* WRICEFX-ID:  FINX798  - Employee Payment                                              *
+* --------------------------------------------------------------------------------------*
+* Purpose:     Employee Reimbursement Access Control                                    *
+* --------------------------------------------------------------------------------------*
+* MODIFICATION HISTORY                                                                  *
+* UserID       Date        Transport   Description                                      *
+* 240162LV     10.08.2023  S2DK925330  Initial development                              *
+* 240162LV     30.08.2023  S2DK925330  Added Approver Userid for access from Inbox      *   
+* 240162LV     14.12.2023  S2DK929657  Added code to cater for L2 authorisation         *
+* 260971JT     19.02.2025  S2DK936813  Defect 16719. Ignore blanks in L2ApproverUserid. *
+*                                      Use new isCurrUserCreatedFor field.              *
+* 180873MC     11.11.2025  S2DK940710  T3EP2 Add check for escalation approver          *
+* --------------------------------------------------------------------------------------*/
+@EndUserText.label: 'Employee Reimbursement'
+@MappingRole: true
+
+define role ZC_FIN_AP_EMPL_REIMBURSEMENT {
+    grant select on
+      ZC_FIN_AP_EMPL_REIMBURSEMENT
+      where 
+        ( ) =  aspect pfcg_auth 
+        ( ZFI_PAYUSR ,
+          ACTVT = '02')
+                      
+        or AccountingDocCreatedByUser ?=  aspect user
+             
+        or (  isCurrUserCreatedFor     = 'X' )
+        
+        or EmployeeNumber             ?=  aspect user
+         and EmployeeNumber           <> ''  
+      
+        or ( ApproverUserid           ?= aspect user
+         and ApproverUserid           <> '' 
+         and ClaimStatus               = 'S' )        
+
+        or (  NoApproverRequiredForUIInd = 'X' 
+          and ValidApprover              = 'X' )
+          
+        or ValidEscalationApprover = 'X'  
+               
+        or ( L2ApproverUserid           ?= aspect user
+         and L2ApproverUserid           <> ''       //Required because always approving for blanks
+         and ClaimStatus                 = 'L1A' )           
+;                                     
+}
