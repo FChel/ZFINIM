@@ -1,4 +1,4 @@
-class zcl_FIN_IM_gr_qry definition
+class zcl_fin_im_gr_qry definition
   public
   final
   create public .
@@ -12,12 +12,12 @@ endclass.
 
 
 
-class zcl_FIN_IM_gr_qry implementation.
+class zcl_fin_im_gr_qry implementation.
 
 
   method if_rap_query_provider~select.
 
-    data lt_result type standard table of zc_FIN_IM_gr_ce.
+    data lt_result type standard table of zc_fin_im_gr_ce.
 
     " ---------------------------------------------------------------
     " 1. Extract filter conditions from the framework
@@ -154,9 +154,66 @@ class zcl_FIN_IM_gr_qry implementation.
       endif.
     endif.
 
+
+    types: begin of ty_po_ccode,
+             ebeln type ebeln,
+             bukrs type bukrs,
+           end of ty_po_ccode.
+    data lt_po_ccode type sorted table of ty_po_ccode with unique key ebeln.
+    if lt_raw is not initial.
+      select distinct ebeln, bukrs
+        from ekko for all entries in @lt_raw
+        where ebeln = @lt_raw-purchaseorder
+        into table @lt_po_ccode.
+    endif.
+
+    types: begin of ty_taxrate,
+             bukrs type bukrs,
+             mwskz type mwskz,
+             waers type waers,
+             rate  type /opt/vim_tax_rate,
+           end of ty_taxrate.
+    data lt_taxrate type sorted table of ty_taxrate
+           with unique key bukrs mwskz waers.
+
+
     loop at lt_raw into data(ls_raw).
       append initial line to lt_result assigning field-symbol(<fs>).
       move-corresponding ls_raw to <fs>.
+
+      " ── Per-line gross-up: matches the server submit gate ──
+      data(lv_bukrs) = value bukrs( ).
+      read table lt_po_ccode into data(ls_cc) with key ebeln = ls_raw-purchaseorder.
+      if sy-subrc = 0.
+        lv_bukrs = ls_cc-bukrs.
+      endif.
+
+      data(lv_rate) = value /opt/vim_tax_rate( ).
+      read table lt_taxrate into data(ls_tr)
+        with key bukrs = lv_bukrs mwskz = ls_raw-taxcode waers = ls_raw-currency.
+      if sy-subrc = 0.
+        lv_rate = ls_tr-rate.
+      else.
+        call function '/OPT/GET_TAX_RATE'
+          exporting
+            i_bukrs            = lv_bukrs
+            i_mwskz            = ls_raw-taxcode
+            i_rbkpv            = ''
+            i_waers            = ls_raw-currency
+          importing
+            e_kbetr            = lv_rate
+          exceptions
+            tax_rate_not_found = 1
+            others             = 2.
+        if sy-subrc <> 0.
+          lv_rate = 0.
+        endif.
+        insert value #( bukrs = lv_bukrs mwskz = ls_raw-taxcode
+                        waers = ls_raw-currency rate = lv_rate ) into table lt_taxrate.
+      endif.
+
+      <fs>-taxamount   = cond #( when lv_rate > 0 then <fs>-amount * lv_rate / 100 else 0 ).
+      <fs>-grossamount = <fs>-amount + <fs>-taxamount.
 
       " Get unit from material document
       sort lt_matdoc_items by mblnr mjahr zeile.

@@ -72,12 +72,6 @@ class lhc_vimdocument definition inheriting from cl_abap_behavior_handler.
                 iv_currency     type waers
       returning value(rv_rate)  type /opt/vim_tax_rate.
 
-    methods calculate_balance for modify
-      importing keys for action vimdocument~calculatebalance result result.
-
-    methods validate for modify
-      importing keys for action vimdocument~validate result result.
-
     methods determine_vendor_name for determine on modify
       importing keys for vimdocument~determinevendorname.
 
@@ -183,81 +177,6 @@ class lhc_vimdocument implementation.
     endif.
   endmethod.
 
-
-  method calculate_balance.
-    " Read the VIM document instance
-    read entities of zi_fin_im_doc in local mode
-      entity vimdocument
-        fields ( vimdocumentid purchaseorder companycode
-                 netamount taxamount grossamount currency creditmemo )
-        with corresponding #( keys )
-      result data(vim_docs).
-
-    check vim_docs is not initial.
-
-    loop at vim_docs into data(vim_doc).
-
-      " Read GR items from EKBE
-      data(lt_gr_items) = read_gr_items( vim_doc-purchaseorder ).
-
-      " Get PO currency
-      data lv_currency type waers.
-      select single waers from ekko
-        into @lv_currency
-        where ebeln = @vim_doc-purchaseorder.
-
-      data(calculated_net)   = conv wrbtr( 0 ).
-      data(calculated_tax)   = conv wrbtr( 0 ).
-      data(calculated_gross) = conv wrbtr( 0 ).
-
-      " Calculate totals from available GR items
-      loop at lt_gr_items into data(ls_gr)
-        where bwart  = '101'
-          and shkzg  = 'S'
-          and lfbnr is initial.
-
-        " Get the tax rate for this line's tax code
-        data(lv_tax_rate) = get_tax_rate(
-          iv_company_code = vim_doc-companycode
-          iv_tax_code     = ls_gr-mwskz
-          iv_currency     = lv_currency ).
-
-        " Net amount is the GR line value (ex tax)
-        data(lv_line_net) = ls_gr-wrbtr.
-
-        " Calculate tax for this line
-        data(lv_line_tax) = conv wrbtr( 0 ).
-        if lv_tax_rate > 0.
-          lv_line_tax = lv_line_net * lv_tax_rate / 100.
-        endif.
-
-        " Accumulate
-        calculated_net   = calculated_net   + lv_line_net.
-        calculated_tax   = calculated_tax   + lv_line_tax.
-
-      endloop.
-
-      " Gross = net + tax
-      calculated_gross = calculated_net + calculated_tax.
-
-      " Calculate balance (invoice gross minus calculated gross)
-      data(balance_difference) = conv wrbtr( vim_doc-grossamount - calculated_gross ).
-
-      " Check tolerance (1 cent as per original implementation)
-      constants lc_tolerance type wrbtr value '0.01'.
-      data(is_within_tolerance) = cond abap_boolean(
-        when abs( balance_difference ) <= lc_tolerance then abap_true
-        else abap_false ).
-
-      " Return the document as result
-      append value #(
-        %tky   = vim_doc-%tky
-        %param = vim_doc
-      ) to result.
-
-    endloop.
-  endmethod.
-
   method get_tax_rate.
     " Look up tax rate from configuration
     " Uses the OpenText VIM function module which reads from
@@ -278,96 +197,6 @@ class lhc_vimdocument implementation.
       rv_rate = 0.
     endif.
   endmethod.
-
-  method validate.
-    read entities of zi_fin_im_doc in local mode
-      entity vimdocument
-        all fields
-        with corresponding #( keys )
-      result data(vim_docs).
-
-    check vim_docs is not initial.
-
-    loop at vim_docs into data(vim_doc).
-      data(has_errors) = abap_false.
-
-      " 1. Check status
-      case vim_doc-processstatus.
-        when '06' or '08' or '10' or '15' or '16' or '18'.
-          has_errors = abap_true.
-
-          append value #(
-            %tky = vim_doc-%tky
-            %msg = new_message(
-              id       = 'ZVIM_GR_APP'
-              number   = '001'
-              severity = if_abap_behv_message=>severity-error )
-          ) to reported-vimdocument.
-      endcase.
-
-      " 2. Check if GR already exists
-      select single @abap_true
-        from mkpf
-        where xblnr = @vim_doc-vimdocumentid
-          and mjahr = @vim_doc-fiscalyear
-        into @data(gr_exists).
-
-      if gr_exists = abap_true.
-        has_errors = abap_true.
-
-        append value #(
-          %tky = vim_doc-%tky
-          %msg = new_message(
-            id       = 'ZVIM_GR_APP'
-            number   = '006'
-            severity = if_abap_behv_message=>severity-error )
-        ) to reported-vimdocument.
-      endif.
-
-      " 3. Check GR items exist for this PO
-      data(lt_gr_items) = read_gr_items( vim_doc-purchaseorder ).
-
-      data(available_count) = 0.
-      loop at lt_gr_items into data(ls_gr)
-        where bwart  = '101'
-          and shkzg  = 'S'
-          and lfbnr is initial.
-        available_count = available_count + 1.
-      endloop.
-
-      if available_count = 0.
-        has_errors = abap_true.
-
-        append value #(
-          %tky = vim_doc-%tky
-          %msg = new_message(
-            id       = 'ZVIM_GR_APP'
-            number   = '001'
-            severity = if_abap_behv_message=>severity-error )
-        ) to reported-vimdocument.
-      endif.
-
-      " Set result
-      append value #(
-        %tky   = vim_doc-%tky
-        %param = vim_doc
-      ) to result.
-
-      if has_errors = abap_true.
-        append value #( %tky = vim_doc-%tky ) to failed-vimdocument.
-      else.
-        append value #(
-          %tky = vim_doc-%tky
-          %msg = new_message(
-            id       = 'ZVIM_GR_APP'
-            number   = '002'
-            severity = if_abap_behv_message=>severity-success )
-        ) to reported-vimdocument.
-      endif.
-
-    endloop.
-  endmethod.
-
 
   method submit_gr.
 *----------------------------------------------------------------------*
@@ -391,18 +220,20 @@ class lhc_vimdocument implementation.
         into @data(ls_vim).
 
       if sy-subrc <> 0.
-        append value #( %param = value #(
-          vimdocumentid = lv_vimdocid
-          success       = abap_false
-          messagetext   = |VIM document { lv_vimdocid } not found.| )
-        ) to result.
+        append value #( %cid = ls_key-%cid
+          %param = value #(
+            vimdocumentid = lv_vimdocid
+            success       = abap_false
+            messagetext   = |VIM document { lv_vimdocid } not found.| )
+          ) to result.
         continue.
       endif.
 
       " ── 2. Status check ─────────────────────────────────────────
       if is_vim_status_actionable( iv_status    = ls_vim-status
                                    iv_proc_type = ls_vim-curr_proc_type ) = abap_false.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |VIM document { lv_vimdocid } is not in an active status for processing.| )
@@ -412,7 +243,8 @@ class lhc_vimdocument implementation.
 
       " ── 3. Credit memo guard ────────────────────────────────────
       if ls_vim-credit_memo is not initial.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |Credit memo processing is not yet implemented. Please contact support.| )
@@ -424,7 +256,8 @@ class lhc_vimdocument implementation.
       data(lt_grs) = deserialise_gr_json( lv_gr_json ).
 
       if lt_grs is initial.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |No goods receipts selected for matching.| )
@@ -604,7 +437,8 @@ class lhc_vimdocument implementation.
 
       " ── Check for errors during line construction ───────────────
       loop at lt_errors into data(ls_err) where type ca 'EAX'.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = ls_err-message )
@@ -638,7 +472,8 @@ class lhc_vimdocument implementation.
               invalid_docid = 1
               others        = 2.
         catch cx_root.
-          append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
             vimdocumentid = lv_vimdocid
             success       = abap_false
             messagetext   = |Unable to create VIM document processor for { lv_vimdocid }.| )
@@ -647,7 +482,8 @@ class lhc_vimdocument implementation.
       endtry.
 
       if sy-subrc <> 0.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |Unable to create VIM document processor for { lv_vimdocid }.| )
@@ -733,7 +569,8 @@ class lhc_vimdocument implementation.
           lo_vim_proc->update( exporting do_commit = ' ' ).
 
         catch cx_root into data(lx_vim).
-          append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
             vimdocumentid = lv_vimdocid
             success       = abap_false
             messagetext   = |VIM update failed: { lx_vim->get_longtext( ) }| )
@@ -757,7 +594,8 @@ class lhc_vimdocument implementation.
       trigger_vim_event( lv_vimdocid ).
 
       " ── 12. Return success ──────────────────────────────────────
-      append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
         vimdocumentid = lv_vimdocid
         success       = abap_true
         messagetext   = |Document { lv_vimdocid } submitted successfully.| )
@@ -777,6 +615,15 @@ class lhc_vimdocument implementation.
       data(lv_reject_code) = ls_key-%param-rejectreasoncode.
       data(lv_reject_text) = ls_key-%param-rejectcomment.
 
+      " ── 0. Mandatory rejection reason (the legacy app let this be blank) ──
+      if lv_reject_code is initial and lv_reject_text is initial.
+        append value #( %cid = ls_key-%cid
+          %param = value #( vimdocumentid = lv_vimdocid
+                            success       = abap_false
+                            messagetext   = 'A rejection reason is required.' ) ) to result.
+        continue.
+      endif.
+
       " ── 1. Read & validate VIM document ─────────────────────────
       select single docid, status, curr_proc_type, credit_memo
         from /opt/vim_1head
@@ -784,7 +631,8 @@ class lhc_vimdocument implementation.
         into @data(ls_vim).
 
       if sy-subrc <> 0.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |VIM document { lv_vimdocid } not found.| )
@@ -794,7 +642,8 @@ class lhc_vimdocument implementation.
 
       if is_vim_status_actionable( iv_status    = ls_vim-status
                                    iv_proc_type = ls_vim-curr_proc_type ) = abap_false.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |VIM document { lv_vimdocid } is not in an active status.| )
@@ -804,7 +653,8 @@ class lhc_vimdocument implementation.
 
       " Credit memo guard (deferred)
       if ls_vim-credit_memo is not initial.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |Credit memo rejection is not yet implemented.| )
@@ -869,7 +719,8 @@ class lhc_vimdocument implementation.
       endtry.
 
       if lo_vim_proc is not bound.
-        append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
           vimdocumentid = lv_vimdocid
           success       = abap_false
           messagetext   = |Unable to create VIM document processor for { lv_vimdocid }.| )
@@ -1003,7 +854,8 @@ class lhc_vimdocument implementation.
         iv_useraction = 'R' ).
 
       " ── 9. Return success ───────────────────────────────────────
-      append value #( %param = value #(
+        append value #( %cid = ls_key-%cid
+          %param = value #(
         vimdocumentid = lv_vimdocid
         success       = abap_true
         messagetext   = |Document { lv_vimdocid } has been rejected.| )
