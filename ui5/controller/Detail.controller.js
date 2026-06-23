@@ -214,16 +214,13 @@ sap.ui.define([
             }
 
             var fInvoiceGross = oDetailModel.getProperty("/GrossAmount") || 0;
-            var fInvoiceNet = oDetailModel.getProperty("/NetAmount") || 0;
-            var fInvoiceTax = oDetailModel.getProperty("/TaxAmount") || 0;
 
-            // Calculate what the total would be if all GRs were selected
-            var fAllNet = 0;
+            // Calculate what the total would be if all GRs were selected           
+            var fAllGross = 0;
             aGRs.forEach(function (oGR) {
-                fAllNet += parseFloat(oGR.Amount) || 0;
-            });
-            var fTaxRatio = fInvoiceNet > 0 ? (fInvoiceTax / fInvoiceNet) : 0;
-            var fAllGross = fAllNet + (fAllNet * fTaxRatio);
+                fAllGross += parseFloat(oGR.GrossAmount) || 0;
+            });            
+            
             var bAllBalance = Math.abs(fInvoiceGross - fAllGross) <= BALANCE_TOLERANCE;
 
             if (aGRs.length === 1 || bAllBalance) {
@@ -242,8 +239,6 @@ sap.ui.define([
             var oDetailModel = this.getView().getModel("detail");
             var oGRTable = this.byId("goodsReceiptsTable");
             var fInvoiceGross = oDetailModel.getProperty("/GrossAmount") || 0;
-            var fInvoiceNet = oDetailModel.getProperty("/NetAmount") || 0;
-            var fInvoiceTax = oDetailModel.getProperty("/TaxAmount") || 0;
 
             var fSelectedNet = 0;
             var fSelectedTax = 0;
@@ -256,15 +251,11 @@ sap.ui.define([
                 aSelectedItems.forEach(function (oItem) {
                     var oCtx = oItem.getBindingContext("detail");
                     if (oCtx) {
-                        fSelectedNet += parseFloat(oCtx.getProperty("Amount")) || 0;
+                        fSelectedNet   += parseFloat(oCtx.getProperty("Amount"))      || 0;
+                        fSelectedTax   += parseFloat(oCtx.getProperty("TaxAmount"))   || 0;
+                        fSelectedGross += parseFloat(oCtx.getProperty("GrossAmount")) || 0;
                     }
                 });
-
-                if (fInvoiceNet > 0) {
-                    var fTaxRatio = fInvoiceTax / fInvoiceNet;
-                    fSelectedTax = fSelectedNet * fTaxRatio;
-                }
-                fSelectedGross = fSelectedNet + fSelectedTax;
             }
 
             var fRemaining = fInvoiceGross - fSelectedGross;
@@ -494,12 +485,14 @@ sap.ui.define([
             this._oRejectDialog.close();
             BusyIndicator.show(0);
 
-            this._callAction("reject").then(function () {
+            this._callAction("reject", {
+                VimDocumentId    : oDetailModel.getProperty("/VimDocumentId"),
+                RejectReasonCode : "",
+                RejectComment    : sReason.trim()
+            }).then(function () {
                 BusyIndicator.hide();
                 MessageBox.success(that._getText("msgRejectSuccess"), {
-                    onClose: function () {
-                        that.onRefresh();
-                    }
+                    onClose: function () { that.onRefresh(); }
                 });
             }).catch(function (oError) {
                 BusyIndicator.hide();
@@ -515,16 +508,23 @@ sap.ui.define([
         /*  OData V4 Action Invocation                                   */
         /* ============================================================ */
 
-        _callAction: function (sActionName) {
+        _callAction: function (sActionName, oParams) {
             var oDataModel = this.getOwnerComponent().getModel();
-            var sPath = "/VIMDocument('" + this._sVimDocumentId + "')";
-
-            var oActionContext = oDataModel.bindContext(
-                sPath + "/com.sap.gateway.srvd_a2x.z_fin_im_doc_srv.v0001." + sActionName + "(...)"
+            // Static action — bound to the entity set, not an instance
+            var oAction = oDataModel.bindContext(
+                "/VIMDocument/com.sap.gateway.srvd.z_fin_im_doc_srv.v0001." + sActionName + "(...)"
             );
-
-            return oActionContext.execute().then(function () {
-                return oActionContext.getBoundContext().requestObject();
+            if (oParams) {
+                Object.keys(oParams).forEach(function (sKey) {
+                    oAction.setParameter(sKey, oParams[sKey]);
+                });
+            }
+            return oAction.execute().then(function () {
+                var oResult = oAction.getBoundContext().getObject();
+                if (oResult && oResult.Success === false) {
+                    return Promise.reject({ message: oResult.MessageText });
+                }
+                return oResult;
             });
         },
 
