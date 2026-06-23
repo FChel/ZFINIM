@@ -426,15 +426,39 @@ sap.ui.define([
 
         onSubmitConfirm: function () {
             var that = this;
+            var oDetailModel = this.getView().getModel("detail");
             this._oSubmitDialog.close();
             BusyIndicator.show(0);
 
-            this._callAction("submitGR").then(function () {
+            // Map the selected GR rows into the backend JSON contract.
+            // The server re-derives amounts itself, so we send keys + quantity only.
+            var oGRTable = this.byId("goodsReceiptsTable");
+            var aSelected = oGRTable ? oGRTable.getSelectedItems() : [];
+            var aGRs = aSelected.map(function (oItem) {
+                var o = oItem.getBindingContext("detail").getObject();
+                return {
+                    grdocnumber       : o.MaterialDocument,
+                    grdocyear         : o.FiscalYear,
+                    grdocitem         : o.MaterialDocumentItem,
+                    po_number         : o.PurchaseOrder,
+                    po_item           : o.PurchaseOrderItem,
+                    quantitydelivered : o.Quantity,
+                    uom               : o.Unit,
+                    taxcode           : o.TaxCode,
+                    deliverynote      : o.DeliveryNote,
+                    showreversalind   : (o.DebitCreditIndicator === "H") ? "X" : ""
+                };
+            });
+
+            this._callAction("submitGR", {
+                VimDocumentId  : oDetailModel.getProperty("/VimDocumentId"),
+                SelectedGRJson : JSON.stringify(aGRs),
+                LateReasonCode : oDetailModel.getProperty("/LateReasonCode") || "",
+                LateComment    : oDetailModel.getProperty("/LateComment") || ""
+            }).then(function () {
                 BusyIndicator.hide();
                 MessageBox.success(that._getText("msgSubmitSuccess"), {
-                    onClose: function () {
-                        that.onRefresh();
-                    }
+                    onClose: function () { that.onRefresh(); }
                 });
             }).catch(function (oError) {
                 BusyIndicator.hide();
