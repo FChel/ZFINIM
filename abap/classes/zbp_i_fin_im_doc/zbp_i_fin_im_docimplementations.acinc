@@ -728,100 +728,6 @@ class lhc_vimdocument implementation.
         continue.
       endif.
 
-      " ── 4. Set RejectedFlag in VIM workflow container ───────────
-      "    (Defensive: if workflow does not exist, rejection still proceeds)
-      data: lv_wf_wiid type swwwihead-top_wi_id.
-      try.
-          " Attempt 1: GET_WORKFLOW_ID
-          data lv_objkey type swo_typeid.
-          call function 'GET_WORKFLOW_ID'
-            importing
-              workitemid = lv_objkey
-            exceptions
-              not_found  = 1
-              others     = 2.
-
-          if sy-subrc = 0 and lv_objkey is not initial.
-            " Walk up to top-level workflow
-            data lv_wi_type type sww_witype.
-            select single wi_type from swwwihead into lv_wi_type
-              where wi_id = lv_objkey.
-            if lv_wi_type <> 'F'.
-              do.
-                data lv_parent type swo_typeid.
-                select single wi_chckwi from swwwihead into lv_parent
-                  where wi_id = lv_objkey and wi_chckwi > 0.
-                if sy-subrc <> 0.
-                  exit.
-                endif.
-                lv_objkey = lv_parent.
-              enddo.
-            endif.
-            lv_wf_wiid = lv_objkey.
-          else.
-            " Attempt 2: VIM log history
-            select * from /opt/vim_1log
-              where docid = @lv_vimdocid
-              order by logid descending
-              into table @data(lt_log).
-            loop at lt_log into data(ls_log) where workitem_id is not initial.
-              select single top_wi_id from swwwihead
-                into @lv_wf_wiid
-                where wi_id = @ls_log-workitem_id.
-              if sy-subrc = 0 and lv_wf_wiid is not initial.
-                exit.
-              endif.
-            endloop.
-
-            " Attempt 3: VIM process table
-            if lv_wf_wiid is initial.
-              select single wi_id from /opt/vim_1proc
-                into @lv_wf_wiid
-                where docid = @lv_vimdocid
-                  and wfl_id = 'WS00275269'.
-            endif.
-          endif.
-
-          " Set RejectedFlag in workflow container
-          if lv_wf_wiid is not initial.
-            data lo_wf_cont type ref to if_swf_cnt_container.
-            call function 'SWW_WI_CONTAINER_READ'
-              exporting
-                wi_id                    = lv_wf_wiid
-              importing
-                wi_container_handle      = lo_wf_cont
-              exceptions
-                container_does_not_exist = 1
-                read_failed              = 2
-                others                   = 3.
-
-            if sy-subrc = 0 and lo_wf_cont is bound.
-              data lv_set_rc type sy-subrc.
-              lo_wf_cont->if_swf_ifs_parameter_container~set(
-                exporting name  = 'RejectedFlag'
-                          value = 'X'
-                importing returncode = lv_set_rc ).
-
-              if lv_set_rc is initial.
-                data lx_cont type ref to cx_swf_cnt_container.
-                call function 'SWW_WI_CONTAINER_MODIFY'
-                  exporting
-                    wi_id               = lv_wf_wiid
-                    merge_old_container = 'X'
-                    wi_container_handle = lo_wf_cont
-                  importing
-                    exception           = lx_cont.
-                if lx_cont is initial.
-                  "COMMIT WORK AND WAIT.
-                endif.
-              endif.
-            endif.
-          endif.
-
-        catch cx_root.
-          " Workflow update failed — non-fatal, continue with rejection
-      endtry.
-
       " ── 5. Update VIM document status ───────────────────────────
       lo_vim_proc->index_header-status = gc_status_rejected_by_approver.
       update /opt/vim_1head
@@ -843,7 +749,8 @@ class lhc_vimdocument implementation.
           user_option = ls_reject_option
           comments    = lt_reject_comments ).
 
-      "COMMIT WORK AND WAIT.
+      " ── 6b. Persist the rejected status + history via the VIM processor ──
+      lo_vim_proc->update( exporting do_commit = ' ' ).
 
       " ── 7. Trigger VIM business rules ───────────────────────────
       trigger_vim_event( lv_vimdocid ).
