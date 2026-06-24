@@ -128,6 +128,9 @@ class lhc_vimdocument definition inheriting from cl_abap_behavior_handler.
 
     methods get_line_tolerance returning value(rv_tolerance) type wrbtr.
 
+    methods update_vim_no_commit
+      importing io_proc type ref to /opt/cl_vim_doc_processor.
+
     " ── static action handlers ──
     methods submit_gr for modify importing keys for action vimdocument~submitgr result result.
     methods reject    for modify importing keys for action vimdocument~reject   result result.
@@ -472,12 +475,12 @@ class lhc_vimdocument implementation.
               invalid_docid = 1
               others        = 2.
         catch cx_root.
-        append value #( %cid = ls_key-%cid
-          %param = value #(
-            vimdocumentid = lv_vimdocid
-            success       = abap_false
-            messagetext   = |Unable to create VIM document processor for { lv_vimdocid }.| )
-          ) to result.
+          append value #( %cid = ls_key-%cid
+            %param = value #(
+              vimdocumentid = lv_vimdocid
+              success       = abap_false
+              messagetext   = |Unable to create VIM document processor for { lv_vimdocid }.| )
+            ) to result.
           continue.
       endtry.
 
@@ -565,16 +568,16 @@ class lhc_vimdocument implementation.
                 cancelled   = ' ' ).
           endif.
 
-          " ── 9. Commit VIM document update ───────────────────────
-          lo_vim_proc->update( exporting do_commit = ' ' ).
+          " ── 9. Persist VIM document update ──────────────────────
+          update_vim_no_commit( lo_vim_proc ).
 
         catch cx_root into data(lx_vim).
-        append value #( %cid = ls_key-%cid
-          %param = value #(
-            vimdocumentid = lv_vimdocid
-            success       = abap_false
-            messagetext   = |VIM update failed: { lx_vim->get_longtext( ) }| )
-          ) to result.
+          append value #( %cid = ls_key-%cid
+            %param = value #(
+              vimdocumentid = lv_vimdocid
+              success       = abap_false
+              messagetext   = |VIM update failed: { lx_vim->get_longtext( ) }| )
+            ) to result.
           continue.
       endtry.
 
@@ -594,12 +597,12 @@ class lhc_vimdocument implementation.
       trigger_vim_event( lv_vimdocid ).
 
       " ── 12. Return success ──────────────────────────────────────
-        append value #( %cid = ls_key-%cid
-          %param = value #(
-        vimdocumentid = lv_vimdocid
-        success       = abap_true
-        messagetext   = |Document { lv_vimdocid } submitted successfully.| )
-      ) to result.
+      append value #( %cid = ls_key-%cid
+        %param = value #(
+      vimdocumentid = lv_vimdocid
+      success       = abap_true
+      messagetext   = |Document { lv_vimdocid } submitted successfully.| )
+    ) to result.
 
     endloop.
 
@@ -730,9 +733,6 @@ class lhc_vimdocument implementation.
 
       " ── 5. Update VIM document status ───────────────────────────
       lo_vim_proc->index_header-status = gc_status_rejected_by_approver.
-      update /opt/vim_1head
-        set status = @gc_status_rejected_by_approver
-        where docid = @lv_vimdocid.
 
       " ── 6. Write VIM history log: Rejected by POC ───────────────
       lo_vim_proc->log_header = lo_vim_proc->index_header.
@@ -750,7 +750,7 @@ class lhc_vimdocument implementation.
           comments    = lt_reject_comments ).
 
       " ── 6b. Persist the rejected status + history via the VIM processor ──
-      lo_vim_proc->update( exporting do_commit = ' ' ).
+      update_vim_no_commit( lo_vim_proc ).
 
       " ── 7. Trigger VIM business rules ───────────────────────────
       trigger_vim_event( lv_vimdocid ).
@@ -761,12 +761,12 @@ class lhc_vimdocument implementation.
         iv_useraction = 'R' ).
 
       " ── 9. Return success ───────────────────────────────────────
-        append value #( %cid = ls_key-%cid
-          %param = value #(
-        vimdocumentid = lv_vimdocid
-        success       = abap_true
-        messagetext   = |Document { lv_vimdocid } has been rejected.| )
-      ) to result.
+      append value #( %cid = ls_key-%cid
+        %param = value #(
+      vimdocumentid = lv_vimdocid
+      success       = abap_true
+      messagetext   = |Document { lv_vimdocid } has been rejected.| )
+    ) to result.
 
     endloop.
 
@@ -1090,6 +1090,24 @@ class lhc_vimdocument implementation.
       into @data(lv_low).
     rv_tolerance = cond #( when sy-subrc = 0 and lv_low is not initial
                            then conv wrbtr( lv_low ) else lc_default ).
+  endmethod.
+
+  method update_vim_no_commit.
+    " Persist VIM header/items via the /OPT/ processor without committing.
+    " UPDATE has two commits: the do_commit-gated one (suppressed by the
+    " parameter) and a tail COMMIT WORK (VIMI-20645) gated only by memory id
+    " FIORI_NO_COMMIT. Both must be off inside the RAP transaction; RAP's own
+    " end-of-request COMMIT WORK flushes the writes. CLEANUP guarantees the flag
+    " is cleared even if UPDATE raises.
+    data lv_no_com_flag type char01 value 'X'.
+    export lv_no_com_flag from lv_no_com_flag to memory id 'FIORI_NO_COMMIT'.
+
+    try.
+        io_proc->update( exporting do_commit = ' ' ).
+        free memory id 'FIORI_NO_COMMIT'.
+      cleanup.
+        free memory id 'FIORI_NO_COMMIT'.
+    endtry.
   endmethod.
 
   method get_attachment.

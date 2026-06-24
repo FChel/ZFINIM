@@ -155,16 +155,23 @@ class zcl_fin_im_gr_qry implementation.
     endif.
 
 
-    types: begin of ty_po_ccode,
+    " Tax code + company code come from the PO ITEM (EKPO), not the GR.
+    " EKBE-MWSKZ is blank on goods-receipt rows (vgabe '1'); the tax code lives
+    " on EKPO-MWSKZ. Reading it from EKBE gave a blank code, so /OPT/GET_TAX_RATE
+    " returned not-found, tax = 0 and gross collapsed to net.
+    types: begin of ty_po_item,
              ebeln type ebeln,
+             ebelp type ebelp,
              bukrs type bukrs,
-           end of ty_po_ccode.
-    data lt_po_ccode type sorted table of ty_po_ccode with unique key ebeln.
+             mwskz type mwskz,
+           end of ty_po_item.
+    data lt_po_item type sorted table of ty_po_item with unique key ebeln ebelp.
     if lt_raw is not initial.
-      select distinct ebeln, bukrs
-        from ekko for all entries in @lt_raw
+      select distinct ebeln, ebelp, bukrs, mwskz
+        from ekpo for all entries in @lt_raw
         where ebeln = @lt_raw-purchaseorder
-        into table @lt_po_ccode.
+          and ebelp = @lt_raw-purchaseorderitem
+        into table @lt_po_item.
     endif.
 
     types: begin of ty_taxrate,
@@ -182,22 +189,28 @@ class zcl_fin_im_gr_qry implementation.
       move-corresponding ls_raw to <fs>.
 
       " ── Per-line gross-up: matches the server submit gate ──
-      data(lv_bukrs) = value bukrs( ).
-      read table lt_po_ccode into data(ls_cc) with key ebeln = ls_raw-purchaseorder.
+      data(lv_bukrs)   = value bukrs( ).
+      data(lv_taxcode) = value mwskz( ).
+      read table lt_po_item into data(ls_poi)
+        with key ebeln = ls_raw-purchaseorder
+                 ebelp = ls_raw-purchaseorderitem.
       if sy-subrc = 0.
-        lv_bukrs = ls_cc-bukrs.
+        lv_bukrs   = ls_poi-bukrs.
+        lv_taxcode = ls_poi-mwskz.
       endif.
+      " Override the blank EKBE tax code with the PO item's (also drives display)
+      <fs>-taxcode = lv_taxcode.
 
       data(lv_rate) = value /opt/vim_tax_rate( ).
       read table lt_taxrate into data(ls_tr)
-        with key bukrs = lv_bukrs mwskz = ls_raw-taxcode waers = ls_raw-currency.
+        with key bukrs = lv_bukrs mwskz = lv_taxcode waers = ls_raw-currency.
       if sy-subrc = 0.
         lv_rate = ls_tr-rate.
       else.
         call function '/OPT/GET_TAX_RATE'
           exporting
             i_bukrs            = lv_bukrs
-            i_mwskz            = ls_raw-taxcode
+            i_mwskz            = lv_taxcode
             i_rbkpv            = ''
             i_waers            = ls_raw-currency
           importing
@@ -208,7 +221,7 @@ class zcl_fin_im_gr_qry implementation.
         if sy-subrc <> 0.
           lv_rate = 0.
         endif.
-        insert value #( bukrs = lv_bukrs mwskz = ls_raw-taxcode
+        insert value #( bukrs = lv_bukrs mwskz = lv_taxcode
                         waers = ls_raw-currency rate = lv_rate ) into table lt_taxrate.
       endif.
 
